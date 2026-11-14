@@ -2,6 +2,8 @@
 
 自用留存，二次修改添加PushPlus 通知，本源fork自czp0312/TieBaSign
 
+每日签到时间，北京时间1点整
+
 ## 使用说明
 
 1. Fork 本仓库，然后点击你的仓库右上角的 `Settings` -> `Secrets and variables` -> `Actions` 这一项，添加一个`Repository secrets`，变量名称为 `BDUSS`，支持同时添加多个帐户，BDUSS 之间用 `#` 隔开即可。
