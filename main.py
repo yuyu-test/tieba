@@ -24,10 +24,10 @@ ENV = os.environ
 
 s = requests.Session()
 adapter = requests.adapters.HTTPAdapter(
-    pool_connections=Config.HTTP_SETTINGS["POOL_CONNECTIONS"],  # 连接池的连接数
-    pool_maxsize=Config.HTTP_SETTINGS["POOL_MAXSIZE"],  # 连接池的最大数量
-    max_retries=Config.HTTP_SETTINGS["RETRY_TIMES"],  # 最大重试次数
-    pool_block=False,  # 连接池满时不阻塞
+    pool_connections=Config.HTTP_SETTINGS["POOL_CONNECTIONS"],
+    pool_maxsize=Config.HTTP_SETTINGS["POOL_MAXSIZE"],
+    max_retries=Config.HTTP_SETTINGS["RETRY_TIMES"],
+    pool_block=False,
 )
 s.mount("http://", adapter)
 s.mount("https://", adapter)
@@ -178,24 +178,14 @@ def sign_one_bar(args):
 
 def send_email(results):
     """发送签到结果邮件"""
-    # 检查必要的环境变量
-    required_env = [
-        "SMTP_HOST",  # 必需：邮件服务器地址
-        "SMTP_PORT",  # 必需：服务器端口
-        "SMTP_USER",  # 必需：邮箱账号
-        "SMTP_PASS",  # 必需：授权码/密码
-        "SENDER",  # 必需：发件人地址
-        "RECEIVER",  # 必需：收件人地址
-    ]
+    required_env = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SENDER", "RECEIVER"]
     if not all(key in ENV for key in required_env):
         logger.warning("邮件环境变量不完整，跳过发送邮件")
         return
 
-    # 统计签到结果
     total = len(results)
     success = len([r for r in results if r.get("is_success")])
 
-    # 构建邮件内容
     html_content = f"""
     <h3>贴吧签到统计</h3>
     <p>总共签到：{total} 个贴吧</p>
@@ -212,39 +202,63 @@ def send_email(results):
         msg = MIMEMultipart()
         msg["From"] = Header(ENV["SENDER"])
         msg["To"] = Header(ENV["RECEIVER"])
-        # 获取北京时间
-        beijing_time = time.localtime(time.time() + 8 * 3600)  # UTC+8
+        beijing_time = time.localtime(time.time() + 8 * 3600)
         date_str = time.strftime("%Y-%m-%d", beijing_time)
-
         msg["Subject"] = Header(f"贴吧签到结果通知 - {date_str}")
-
         msg.attach(MIMEText(html_content, "html", "utf-8"))
 
-        # 添加详细的连接日志
         logger.info(f"尝试连接 SMTP 服务器: {ENV['SMTP_HOST']}:{ENV['SMTP_PORT']}")
-
         try:
             smtp = smtplib.SMTP_SSL(ENV["SMTP_HOST"], int(ENV["SMTP_PORT"]))
         except Exception as e:
             logger.error(f"SMTP 服务器连接失败: {e}")
-            # 尝试不使用 SSL
             logger.info("尝试使用非 SSL 连接")
             smtp = smtplib.SMTP(ENV["SMTP_HOST"], int(ENV["SMTP_PORT"]))
-            smtp.starttls()  # 启用 TLS 加密
+            smtp.starttls()
 
         logger.info("SMTP 服务器连接成功，尝试登录")
         smtp.login(ENV["SMTP_USER"], ENV["SMTP_PASS"])
         logger.info("SMTP 登录成功，开始发送邮件")
-
         smtp.send_message(msg)
         smtp.quit()
         logger.info("签到结果邮件发送成功")
-    except smtplib.SMTPAuthenticationError as e:
-        logger.error(f"SMTP 认证失败，请检查用户名和密码: {e}")
-    except smtplib.SMTPException as e:
-        logger.error(f"SMTP 错误: {e}")
     except Exception as e:
         logger.error(f"发送邮件失败: {str(e)}")
+
+
+# ================= 新增：PushPlus 推送函数 =================
+def send_pushplus(results):
+    """发送签到结果到 PushPlus"""
+    token = ENV.get('PUSH_PLUS_TOKEN')
+    if not token:
+        logger.warning("未配置 PUSH_PLUS_TOKEN，跳过发送 PushPlus 通知")
+        return
+
+    total = len(results)
+    success = len([r for r in results if r.get("is_success")])
+    fail = total - success
+
+    # 拼接纯文本内容，防止微信端显示 HTML 乱码
+    content = f"【贴吧签到结果】\n总共签到: {total} 个\n成功: {success} 个\n失败: {fail} 个\n\n"
+    
+    # 如果有关注失败的，把失败的名字列出来
+    if fail > 0:
+        fail_list = [r["name"] for r in results if not r.get("is_success")]
+        content += "失败贴吧: " + ", ".join(fail_list)
+
+    url = 'http://www.pushplus.plus/send'
+    data = {
+        "token": token,
+        "title": "贴吧自动签到",
+        "content": content,
+        "template": "txt"
+    }
+    try:
+        resp = requests.post(url, json=data)
+        logger.info(f"PushPlus 通知发送结果: {resp.json().get('msg')}")
+    except Exception as e:
+        logger.error(f"PushPlus 通知发送失败: {e}")
+# ==========================================================
 
 
 def main():
@@ -268,7 +282,7 @@ def main():
         to_sign = favorites[:]
         all_results = []
 
-        while rounds < 5 and to_sign:  # 当 to_sign 为空时，循环会结束
+        while rounds < 5 and to_sign: 
             rounds += 1
             logger.info(f"开始第 {rounds} 轮签到，待签到贴吧数：{len(to_sign)}")
             results = []
@@ -278,7 +292,6 @@ def main():
                     executor.submit(sign_one_bar, (bduss, tbs, bar)): bar
                     for bar in to_sign
                 }
-                # 并发执行签到
                 for future in concurrent.futures.as_completed(future_to_bar):
                     result = future.result()
                     if result:
@@ -291,8 +304,6 @@ def main():
                             break
 
             all_results.extend(results)
-
-            # 过滤出未签到成功的贴吧
             to_sign = [
                 result["bar"] for result in results if not result.get("is_success")
             ]
@@ -304,8 +315,13 @@ def main():
                 logger.info("所有贴吧签到成功，结束签到")
                 break
 
+        # ================= 触发通知 =================
         if all_results:
+            # 1. 尝试发邮件 (你原来代码里的功能)
             send_email(all_results)
+            # 2. 尝试发 PushPlus (新加的功能)
+            send_pushplus(all_results)
+        # ============================================
 
 
 if __name__ == "__main__":
